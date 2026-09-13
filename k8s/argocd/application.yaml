@@ -35,6 +35,19 @@ spec:
     server: https://kubernetes.default.svc
     namespace: sd
 
+  # Campos que o CLUSTER injeta e são IMUTÁVEIS no StatefulSet — se não os
+  # ignorarmos, o Argo fica eternamente OutOfSync tentando "remover" o default:
+  #   - volumeMode (defaulta para Filesystem no volumeClaimTemplates)
+  #   - persistentVolumeClaimRetentionPolicy (defaulta para Retain/Retain)
+  ignoreDifferences:
+    - group: apps
+      kind: StatefulSet
+      name: cassandra
+      namespace: sd
+      jsonPointers:
+        - /spec/volumeClaimTemplates
+        - /spec/persistentVolumeClaimRetentionPolicy
+
   # COMO sincroniza: automático, self-healing e podando o que sumir do Git.
   syncPolicy:
     automated:
