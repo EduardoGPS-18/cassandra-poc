@@ -1,0 +1,54 @@
+# Gerador de carga (a "aplicação" do TP) — Deployment contínuo.
+# Roda para sempre disparando escritas/leituras em LOCAL_QUORUM; o log é o
+# palco da demo de tolerância a falhas. Acompanhe com:  make app-logs
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: loadgen
+  namespace: sd
+  labels:
+    app: loadgen
+spec:
+  replicas: 1                     # suba para 2-3 se quiser mais carga concorrente
+  selector:
+    matchLabels:
+      app: loadgen
+  template:
+    metadata:
+      labels:
+        app: loadgen
+    spec:
+      # Tempo para o SIGTERM imprimir o RESUMO FINAL antes de morrer.
+      terminationGracePeriodSeconds: 15
+      containers:
+        - name: loadgen
+          image: tp01-loadgen:latest
+          imagePullPolicy: IfNotPresent   # usa a imagem carregada via `kind load`
+          env:
+            - name: CONTACT_POINTS
+              value: "cassandra-client.sd.svc.cluster.local"
+            - name: KEYSPACE
+              value: "sd_demo"
+            - name: LOCAL_DC
+              value: "dc1"
+            - name: CONSISTENCY
+              value: "LOCAL_QUORUM"   # 2 de 3 réplicas => tolera 1 nó fora
+            - name: CONCURRENCY
+              value: "32"
+            - name: READ_RATIO
+              value: "0.3"
+            - name: BUCKETS
+              value: "64"
+            - name: REPORT_INTERVAL
+              value: "2.0"
+            # Emite amostras cruas de latência (linhas "#LAT ...") para o
+            # run-test.sh calcular percentis corretos (sem média de percentis).
+            - name: EMIT_LAT_SAMPLES
+              value: "1"
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "500m"
+              memory: "256Mi"

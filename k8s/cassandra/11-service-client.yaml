@@ -1,0 +1,19 @@
+# Service de CLIENTE (ClusterIP normal) — ponto único de entrada para a
+# APLICAÇÃO se conectar via CQL (porta 9042). O k8s faz load balancing das
+# conexões entre os pods PRONTOS. O driver do Cassandra descobre o restante
+# do anel a partir de qualquer nó de contato.
+apiVersion: v1
+kind: Service
+metadata:
+  name: cassandra-client
+  namespace: sd
+  labels:
+    app: cassandra
+spec:
+  type: ClusterIP
+  selector:
+    app: cassandra
+  ports:
+    - name: cql
+      port: 9042
+      targetPort: 9042

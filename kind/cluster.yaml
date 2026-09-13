@@ -1,0 +1,13 @@
+# kind (Kubernetes IN Docker) — cada "nó" abaixo vira 1 container Docker.
+# 1 control-plane + 3 workers => temos onde espalhar os 5 pods do Cassandra
+# e podemos derrubar um WORKER inteiro para demonstrar tolerância a falhas.
+#
+# Sobe com:  kind create cluster --config kind/cluster.yaml
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: sd-cassandra
+nodes:
+  - role: control-plane
+  - role: worker
+  - role: worker
+  - role: worker

@@ -1,0 +1,51 @@
+# Application do Argo CD = a "declaração" de GitOps do TP.
+#
+# O que ela diz: "mantenha o que está no Git (path k8s/) igual ao que roda no
+# cluster (namespace sd), sozinho". O Argo faz o diff Git↔cluster e sincroniza.
+#
+# ⚠️ Este arquivo é um TEMPLATE: os campos ${...} são preenchidos por
+#    `scripts/argocd-app.sh` (chamado por `make argo-app`). Ele NÃO deve ser
+#    aplicado direto com kubectl — use o make target.
+#
+# Passe o seu repositório assim:
+#   make argo-app REPO=https://github.com/<voce>/SD BRANCH=main APP_PATH=tp-01/k8s
+# (se o repo tiver o tp-01 na raiz, use APP_PATH=k8s)
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: tp01-cassandra
+  namespace: argocd
+  # Finalizer: ao deletar a Application, o Argo remove também o que ela criou.
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+
+  # DE ONDE vem a verdade (o Git).
+  source:
+    repoURL: ${REPO_URL}
+    targetRevision: ${BRANCH}
+    path: ${APP_PATH}
+    directory:
+      recurse: true          # entra em cassandra/ e app/
+      exclude: "argocd/*"     # NÃO se auto-gerencia (evita loop com o bootstrap)
+
+  # PARA ONDE vai (o cluster/namespace destino).
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: sd
+
+  # COMO sincroniza: automático, self-healing e podando o que sumir do Git.
+  syncPolicy:
+    automated:
+      prune: true            # apagou do Git => apaga do cluster
+      selfHeal: true         # mexeu no cluster na mão => Argo reverte pro Git
+    syncOptions:
+      - CreateNamespace=true # cria o namespace sd se não existir
+      - ServerSideApply=true # aplica bem manifestos grandes (ex.: StatefulSet)
+    retry:
+      limit: 5
+      backoff:
+        duration: 10s
+        factor: 2
+        maxDuration: 3m

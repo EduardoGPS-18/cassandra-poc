@@ -1,0 +1,126 @@
+# StatefulSet do Cassandra — 5 réplicas (cassandra-0 .. cassandra-4).
+#
+# Por que StatefulSet (e não Deployment)?
+#   - Identidade de rede ESTÁVEL (cassandra-0, cassandra-1, ...) => seeds fixos.
+#   - Storage PERSISTENTE por pod (cada nó tem seus SSTables em um PVC próprio).
+#   - Boot ORDENADO (podManagementPolicy: OrderedReady, o default): sobe um nó
+#     por vez, esperando ficar Ready. Isso evita que vários nós façam bootstrap
+#     ao mesmo tempo e briguem pela posse dos tokens.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: cassandra
+  namespace: sd
+  labels:
+    app: cassandra
+spec:
+  serviceName: cassandra          # tem que casar com o Service headless
+  replicas: 5                     # <<< 5 instâncias, requisito do TP
+  selector:
+    matchLabels:
+      app: cassandra
+  # OrderedReady é o default e é o que queremos para o Cassandra.
+  podManagementPolicy: OrderedReady
+  template:
+    metadata:
+      labels:
+        app: cassandra
+    spec:
+      # Drain leva alguns segundos; damos tempo para o nó sair do anel com graça.
+      terminationGracePeriodSeconds: 180
+      # A imagem oficial roda como uid/gid 999 (usuário "cassandra").
+      # fsGroup garante que o volume montado pertença a esse grupo.
+      securityContext:
+        fsGroup: 999
+      affinity:
+        # Espalha os pods entre nós diferentes do k8s quando possível (soft).
+        # "preferred" (e não "required") para caberem 5 pods em 3 workers.
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app: cassandra
+                topologyKey: kubernetes.io/hostname
+      containers:
+        - name: cassandra
+          image: cassandra:4.1
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: intra-node
+              containerPort: 7000
+            - name: jmx
+              containerPort: 7199
+            - name: cql
+              containerPort: 9042
+          resources:
+            # Ajuste conforme a RAM do seu Docker Desktop. 5 pods * 1Gi = 5Gi.
+            requests:
+              cpu: "250m"
+              memory: "1Gi"
+            limits:
+              cpu: "1"
+              memory: "1536Mi"
+          env:
+            # IP do próprio pod — usado pelas probes (nodetool).
+            - name: POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+            - name: CASSANDRA_CLUSTER_NAME
+              value: "sd-cluster"
+            # DC/rack lógicos — necessários para NetworkTopologyStrategy (RF por DC).
+            - name: CASSANDRA_DC
+              value: "dc1"
+            - name: CASSANDRA_RACK
+              value: "rack1"
+            - name: CASSANDRA_ENDPOINT_SNITCH
+              value: "GossipingPropertyFileSnitch"
+            # SEEDS: 2 nós de contato inicial (boa prática: 2-3 seeds por DC).
+            # Novos nós usam os seeds só para ENTRAR no anel; depois é tudo gossip.
+            - name: CASSANDRA_SEEDS
+              value: "cassandra-0.cassandra.sd.svc.cluster.local,cassandra-1.cassandra.sd.svc.cluster.local"
+            # Heap enxuta para caber em máquina local. Em produção: 8G+.
+            - name: MAX_HEAP_SIZE
+              value: "512M"
+            - name: HEAP_NEWSIZE
+              value: "128M"
+          # Sai do anel com graça antes de morrer (evita hint storm / timeouts).
+          lifecycle:
+            preStop:
+              exec:
+                command: ["/bin/sh", "-c", "nodetool drain || true"]
+          # READINESS: só entra no Service quando o PRÓPRIO nó está "UN" (Up/Normal).
+          readinessProbe:
+            exec:
+              command:
+                - /bin/bash
+                - -c
+                - nodetool status | grep -E "^UN\s+${POD_IP}\b"
+            initialDelaySeconds: 90
+            periodSeconds: 15
+            timeoutSeconds: 10
+            failureThreshold: 12
+          # LIVENESS: porta CQL aberta => processo vivo. Delay alto p/ não matar no boot.
+          livenessProbe:
+            tcpSocket:
+              port: 9042
+            initialDelaySeconds: 180
+            periodSeconds: 30
+            timeoutSeconds: 10
+            failureThreshold: 6
+          volumeMounts:
+            - name: cassandra-data
+              mountPath: /var/lib/cassandra
+  # Um PVC por pod. Em kind usa o StorageClass default (local-path).
+  # Em nuvem, troque para gp3 (EKS) ou pd-ssd (GKE) — ver README.
+  volumeClaimTemplates:
+    - metadata:
+        name: cassandra-data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        # storageClassName: gp3        # <- descomente/ajuste na nuvem
+        resources:
+          requests:
+            storage: 2Gi

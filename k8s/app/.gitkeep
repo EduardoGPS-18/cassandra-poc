@@ -1,0 +1,3 @@
+# A aplicação de estresse (gerador de carga CQL) entra aqui no próximo tópico.
+# Provável: um Deployment/Job Python (driver cassandra-driver) apontando para
+# o Service "cassandra-client:9042", com N réplicas para gerar carga concorrente.

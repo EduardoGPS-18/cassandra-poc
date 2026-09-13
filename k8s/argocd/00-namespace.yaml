@@ -1,0 +1,8 @@
+# Namespace do Argo CD (o control-plane de GitOps).
+# O install oficial do Argo (make argo-install) aplica os componentes AQUI.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: argocd
+  labels:
+    app.kubernetes.io/part-of: tp01-cassandra
