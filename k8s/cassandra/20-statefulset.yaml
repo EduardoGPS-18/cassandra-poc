@@ -91,21 +91,20 @@ spec:
             preStop:
               exec:
                 command: ["/bin/sh", "-c", "nodetool drain || true"]
-          # READINESS: só entra no Service quando o PRÓPRIO nó está "UN" (Up/Normal).
+          # READINESS: porta CQL (9042) aceitando conexão => pronto para servir.
+          # Antes usávamos `nodetool status | grep UN`, mas o nodetool sobe uma JVM
+          # a cada chamada; sob contenção de CPU (ex.: com o Argo CD rodando junto)
+          # ele passava de 10s e a probe dava FALSO-NEGATIVO — marcava o pod
+          # NotReady com o nó perfeitamente "UN" no anel. Um tcpSocket é barato e
+          # não depende de CPU. Trade-off: não valida "UN", só que o CQL responde
+          # (suficiente para o TP; o loadgen usa LOCAL_QUORUM e tolera nó fora).
           readinessProbe:
-            exec:
-              command:
-                - /bin/bash
-                - -c
-                - nodetool status | grep -E "^UN\s+${POD_IP}\b"
-            initialDelaySeconds: 90
-            # nodetool sobe uma JVM a cada chamada; sob contenção de CPU (ex.: com
-            # o Argo CD rodando junto) ele passa de 10s e a probe dá falso-negativo,
-            # marcando o pod NotReady mesmo com o nó UN no anel. Damos mais folga e
-            # espaçamos as chamadas (menos JVMs concorrendo).
-            periodSeconds: 30
-            timeoutSeconds: 30
-            failureThreshold: 12
+            tcpSocket:
+              port: 9042
+            initialDelaySeconds: 60
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 6
           # LIVENESS: porta CQL aberta => processo vivo. Delay alto p/ não matar no boot.
           livenessProbe:
             tcpSocket:
