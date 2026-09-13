@@ -99,8 +99,12 @@ spec:
                 - -c
                 - nodetool status | grep -E "^UN\s+${POD_IP}\b"
             initialDelaySeconds: 90
-            periodSeconds: 15
-            timeoutSeconds: 10
+            # nodetool sobe uma JVM a cada chamada; sob contenção de CPU (ex.: com
+            # o Argo CD rodando junto) ele passa de 10s e a probe dá falso-negativo,
+            # marcando o pod NotReady mesmo com o nó UN no anel. Damos mais folga e
+            # espaçamos as chamadas (menos JVMs concorrendo).
+            periodSeconds: 30
+            timeoutSeconds: 30
             failureThreshold: 12
           # LIVENESS: porta CQL aberta => processo vivo. Delay alto p/ não matar no boot.
           livenessProbe:
