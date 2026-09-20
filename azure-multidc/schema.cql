@@ -1,16 +1,15 @@
--- Schema de demonstração do TP01.
+-- Schema inicial do cluster multi-DC.
 --
--- RF=3 (requisito): usamos NetworkTopologyStrategy com 3 réplicas no dc1.
--- Como temos 5 nós e RF=3, CADA linha vive em 3 dos 5 nós. Isso permite:
---   - perder 1 nó e manter QUORUM (2 de 3) em leitura/escrita  -> tolerância a falhas
---   - LOCAL_QUORUM continua atendendo mesmo com 1 réplica fora do ar
+-- Nasce com réplicas SÓ no dc1: neste momento o dc2 ainda não existe no anel.
+-- Declarar 'dc2': 3 agora faria o coordenador tentar satisfazer réplicas em um
+-- DC vazio. O dc2 entra depois, via ALTER + nodetool rebuild
+-- (scripts/multidc-join-dc2.sh) — que é o procedimento oficial do Cassandra
+-- para adicionar um datacenter a um cluster existente.
 CREATE KEYSPACE IF NOT EXISTS sd_demo
   WITH replication = {'class': 'NetworkTopologyStrategy', 'dc1': 3};
 
 USE sd_demo;
 
--- Tabela simples de exemplo (a aplicação real vem depois).
--- Modelagem por partition key (id) — típico do Cassandra.
 CREATE TABLE IF NOT EXISTS eventos (
     id        uuid,
     bucket    int,

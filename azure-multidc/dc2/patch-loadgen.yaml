@@ -1,0 +1,33 @@
+# O driver fala só com o DC local (DCAwareRoundRobin): as escritas confirmam
+# em dc2 sem esperar a outra região.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: loadgen
+  namespace: sd
+spec:
+  # Fica PARADO por padrão: a carga do cluster é gerada por uma instância só,
+  # no dc1. Ligue este aqui apenas para a demo de QUEDA DE REGIÃO, quando você
+  # precisa provar que o dc2 continua servindo sozinho:
+  #     make mdc-loadgen-dc2-on     (e ...-off para desligar)
+  replicas: 0
+  template:
+    spec:
+      # A aplicação vai para a ZONA 2, onde mora só o rack2 (1 nó). A zona 1
+      # concentra os 2 nós do rack1 e, como o NetworkTopologyStrategy distribui
+      # as réplicas em rodízio entre os racks, ela carrega 2 das 3 cópias de
+      # cada partição — é a zona mais ocupada. Deixar o gerador de carga longe
+      # dela evita disputa de CPU justamente onde o Cassandra mais trabalha.
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: topology.kubernetes.io/zone
+                    operator: In
+                    values: ["mexicocentral-2"]
+      containers:
+        - name: loadgen
+          env:
+            - name: LOCAL_DC
+              value: "dc2"

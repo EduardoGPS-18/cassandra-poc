@@ -1,0 +1,83 @@
+# UM internal Load Balancer por pod do Cassandra.
+#
+# Por que isso existe: o gossip entre DCs precisa de um endereço ESTÁVEL e
+# ROTEÁVEL entre as duas VNets. O IP do pod não serve — muda a cada restart e
+# (com Azure CNI overlay) só existe dentro do próprio cluster. Então cada nó
+# ganha um IP fixo de internal LB, que vira o seu `broadcast_address`.
+#
+# O IP fixo (loadBalancerIP) e a subnet são definidos no overlay de cada DC.
+#
+# externalTrafficPolicy: Local  -> preserva o IP de origem e evita o segundo
+# salto entre nós; o LB só entrega ao nó que de fato hospeda o pod.
+#
+# publishNotReadyAddresses: true -> ESSENCIAL, e nada obvio. Sem isso o cluster
+# trava num impasse circular em todo nó que NÃO é seed:
+#
+#   1. o nó manda o SYN de gossip para um seed  (funciona)
+#   2. o seed responde o ACK para a caixa postal do nó
+#   3. com Local, o LB só entrega a nó com endpoint READY
+#   4. a readiness probe testa a 9042, que o Cassandra só abre DEPOIS de
+#      entrar no anel
+#   5. => ACK descartado -> nunca entra no anel -> nunca fica ready -> loop
+#      ("Unable to gossip with any peers" + CrashLoopBackOff eterno)
+#
+# Seeds não sofrem disso porque não dependem do shadow round para subir — por
+# isso o sintoma aparece só em parte dos pods, o que despista.
+#
+# Com a flag, o EndpointSlice marca o endereço como pronto independentemente da
+# probe, o LB passa a entregar, e o gossip fecha. O Service de CLIENTE
+# (11-service-client.yaml) NÃO leva a flag: lá ready tem que significar mesmo
+# "aceita CQL". É o mesmo motivo do publishNotReadyAddresses no headless.
+apiVersion: v1
+kind: Service
+metadata:
+  name: cassandra-rack1-0
+  namespace: sd
+  labels: { app: cassandra, role: gossip-endpoint }
+  annotations:
+    service.beta.kubernetes.io/azure-load-balancer-internal: "true"
+spec:
+  type: LoadBalancer
+  externalTrafficPolicy: Local
+  publishNotReadyAddresses: true
+  selector:
+    statefulset.kubernetes.io/pod-name: cassandra-rack1-0
+  ports:
+    - { name: intra-node, port: 7000, targetPort: 7000 }
+    - { name: cql, port: 9042, targetPort: 9042 }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: cassandra-rack1-1
+  namespace: sd
+  labels: { app: cassandra, role: gossip-endpoint }
+  annotations:
+    service.beta.kubernetes.io/azure-load-balancer-internal: "true"
+spec:
+  type: LoadBalancer
+  externalTrafficPolicy: Local
+  publishNotReadyAddresses: true
+  selector:
+    statefulset.kubernetes.io/pod-name: cassandra-rack1-1
+  ports:
+    - { name: intra-node, port: 7000, targetPort: 7000 }
+    - { name: cql, port: 9042, targetPort: 9042 }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: cassandra-rack2-0
+  namespace: sd
+  labels: { app: cassandra, role: gossip-endpoint }
+  annotations:
+    service.beta.kubernetes.io/azure-load-balancer-internal: "true"
+spec:
+  type: LoadBalancer
+  externalTrafficPolicy: Local
+  publishNotReadyAddresses: true
+  selector:
+    statefulset.kubernetes.io/pod-name: cassandra-rack2-0
+  ports:
+    - { name: intra-node, port: 7000, targetPort: 7000 }
+    - { name: cql, port: 9042, targetPort: 9042 }

@@ -1,0 +1,28 @@
+# dc1 / rack1 -> zona de disponibilidade chilecentral-1.
+# É isto que faz "rack" deixar de ser um rótulo decorativo: cada rack do
+# Cassandra é uma AZ real da Azure, com energia e rede independentes. Com
+# RF=3 e 2 racks, o NetworkTopologyStrategy espalha as réplicas entre as
+# zonas em vez de empilhá-las no mesmo domínio de falha.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: cassandra-rack1
+  namespace: sd
+spec:
+  template:
+    spec:
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: topology.kubernetes.io/zone
+                    operator: In
+                    values: ["chilecentral-1"]
+      containers:
+        - name: cassandra
+          env:
+            - name: CASSANDRA_DC
+              value: "dc1"
+            - name: AUTO_BOOTSTRAP
+              value: "true"

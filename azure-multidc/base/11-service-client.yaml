@@ -1,0 +1,17 @@
+# Entrada CQL LOCAL do DC. Cada DC tem a sua; a aplicação nunca atravessa
+# região para escrever (é o ponto do LOCAL_QUORUM).
+apiVersion: v1
+kind: Service
+metadata:
+  name: cassandra-client
+  namespace: sd
+  labels:
+    app: cassandra
+spec:
+  type: ClusterIP
+  selector:
+    app: cassandra
+  ports:
+    - name: cql
+      port: 9042
+      targetPort: 9042

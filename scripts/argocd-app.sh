@@ -6,6 +6,11 @@
 #   REPO=https://github.com/<voce>/SD [BRANCH=main] [APP_PATH=tp-01/k8s] bash scripts/argocd-app.sh
 set -euo pipefail
 
+# CTX: contexto kubectl alvo. Vazio = contexto atual (comportamento no kind).
+# No Azure aponte para o cluster AKS: CTX=aks-tp01 ou CTX=aks-tp01-dc1.
+CTX="${CTX:-}"
+kubectl() { command kubectl ${CTX:+--context "$CTX"} "$@"; }
+
 ARGO_NS="${ARGO_NS:-argocd}"
 export REPO_URL="${REPO:?Defina REPO=https://github.com/<voce>/<repo> (o Git que o Argo vai seguir)}"
 export BRANCH="${BRANCH:-main}"

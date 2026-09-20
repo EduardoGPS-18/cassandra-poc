@@ -1,0 +1,167 @@
+# StatefulSet do RACK 2 — 1 nó. Gêmeo do rack1; muda replicas, nome e rack.
+# (os comentários longos estão no 30-statefulset-rack1.yaml)
+#
+# Por que um StatefulSet POR RACK: o DC e o rack de um nó vêm das variáveis
+# CASSANDRA_DC / CASSANDRA_RACK, que são fixas no pod template. Como um rack é,
+# por definição, um conjunto de nós com o mesmo domínio de falha, "um
+# StatefulSet por rack" é a granularidade natural.
+#
+# Aqui rack == zona de disponibilidade da Azure (ver nodeAffinity no overlay):
+# rack1 -> zona 1, rack2 -> zona 2. Com isso o NetworkTopologyStrategy passa a
+# distribuir as réplicas por ZONAS DE VERDADE, que era a limitação do setup
+# anterior (todos os pods diziam "rack1").
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: cassandra-rack2
+  namespace: sd
+  labels:
+    app: cassandra
+    rack: rack2
+spec:
+  serviceName: cassandra
+  replicas: 1
+  selector:
+    matchLabels:
+      app: cassandra
+      rack: rack2
+  podManagementPolicy: OrderedReady
+  template:
+    metadata:
+      labels:
+        app: cassandra
+        rack: rack2
+    spec:
+      terminationGracePeriodSeconds: 180
+      securityContext:
+        fsGroup: 999
+      affinity:
+        # Só 1 nó aqui, mas mantemos a regra por simetria.
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    rack: rack2
+                topologyKey: kubernetes.io/hostname
+        # nodeAffinity (rack -> zona) é injetada pelo overlay de cada DC,
+        # porque o nome da zona carrega a região (ex.: brazilsouth-1).
+      containers:
+        - name: cassandra
+          image: cassandra:4.1
+          imagePullPolicy: IfNotPresent
+          # Wrapper idêntico ao do rack1 — ver explicação lá.
+          command:
+            - /bin/bash
+            - -c
+            - |
+              set -euo pipefail
+
+              BCAST="$(awk -F= -v p="$POD_NAME" '$1==p {print $2}' /etc/cassandra-topology/lb-ips)"
+              if [ -z "$BCAST" ]; then
+                echo "ERRO: nenhum IP de internal LB mapeado para '$POD_NAME' no ConfigMap cassandra-topology" >&2
+                exit 1
+              fi
+              export CASSANDRA_BROADCAST_ADDRESS="$BCAST"
+              export CASSANDRA_BROADCAST_RPC_ADDRESS="$POD_IP"
+
+              cat > /etc/cassandra/cassandra-rackdc.properties <<RACKDC
+              dc=${CASSANDRA_DC}
+              rack=${CASSANDRA_RACK}
+              prefer_local=true
+              RACKDC
+
+              # Se o entrypoint ainda for rodar como root e depois descer para o
+              # usuario cassandra (gosu), os arquivos que acabamos de escrever
+              # precisam pertencer a ele, senao o sed do entrypoint falha.
+              if [ "$(id -u)" = "0" ]; then
+                chown cassandra:cassandra /etc/cassandra/cassandra-rackdc.properties /etc/cassandra/cassandra.yaml || true
+              fi
+
+              # Alocacao de tokens: o Cassandra 4.x escolhe tokens de forma rack-aware
+              # e EXIGE pelo menos RF racks no DC. A imagem vem com o valor 3
+              # DESCOMENTADO, e nossa topologia tem 2 racks por DC. Resultado: o
+              # terceiro no a entrar morre no boot com
+              #   "Token allocation failed: the number of racks 2 in datacenter
+              #    dc2 is lower than its replication factor 3"
+              # Os dois primeiros nos escapam porque, sem par para alocar contra,
+              # caem no caminho de tokens aleatorios — o que faz a falha parecer
+              # problema de um pod especifico.
+              #
+              # Alinhamos ao numero real de racks. Isso muda so como os tokens
+              # sao ESCOLHIDOS; o RF do keyspace continua 3, definido no schema.
+              sed -i "s/^allocate_tokens_for_local_replication_factor:.*/allocate_tokens_for_local_replication_factor: ${ALLOC_TOKENS_RF:-2}/" \
+                /etc/cassandra/cassandra.yaml
+
+              if [ "${AUTO_BOOTSTRAP:-true}" = "false" ]; then
+                grep -q '^auto_bootstrap:' /etc/cassandra/cassandra.yaml \
+                  || echo 'auto_bootstrap: false' >> /etc/cassandra/cassandra.yaml
+              fi
+
+              echo ">> $POD_NAME | dc=$CASSANDRA_DC rack=$CASSANDRA_RACK | gossip(broadcast)=$BCAST | driver(rpc)=$POD_IP"
+              exec docker-entrypoint.sh cassandra -f
+          ports:
+            - { name: intra-node, containerPort: 7000 }
+            - { name: jmx, containerPort: 7199 }
+            - { name: cql, containerPort: 9042 }
+          resources:
+            # CPU pedida baixa de proposito: a VM tem 2 vCPU e ~1.84 alocaveis;
+            # pedir 1 inteiro nao deixaria espaco para os pods de sistema e o
+            # loadgen. O limite alto permite aproveitar o burst quando ha credito.
+            requests: { cpu: "500m", memory: "3Gi" }
+            limits: { cpu: "2", memory: "4Gi" }
+          env:
+            - name: POD_NAME
+              valueFrom: { fieldRef: { fieldPath: metadata.name } }
+            - name: POD_IP
+              valueFrom: { fieldRef: { fieldPath: status.podIP } }
+            # O cluster_name PRECISA ser idêntico nos dois DCs — é o que faz os
+            # dois conjuntos de nós formarem UM cluster, e não dois.
+            - name: CASSANDRA_CLUSTER_NAME
+              value: "sd-cluster"
+            - name: CASSANDRA_RACK
+              value: "rack2"
+            - name: CASSANDRA_ENDPOINT_SNITCH
+              value: "GossipingPropertyFileSnitch"
+            # CASSANDRA_DC e AUTO_BOOTSTRAP vêm do overlay de cada DC.
+            # Seeds: 2 por DC, os 4 iguais nos dois lados (vêm do ConfigMap).
+            - name: CASSANDRA_SEEDS
+              valueFrom:
+                configMapKeyRef: { name: cassandra-topology, key: seeds }
+            - name: MAX_HEAP_SIZE
+              value: "2G"
+            - name: HEAP_NEWSIZE
+              value: "512M"
+          lifecycle:
+            preStop:
+              exec:
+                command: ["/bin/sh", "-c", "nodetool drain || true"]
+          readinessProbe:
+            tcpSocket: { port: 9042 }
+            initialDelaySeconds: 90
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 6
+          livenessProbe:
+            tcpSocket: { port: 9042 }
+            initialDelaySeconds: 240
+            periodSeconds: 30
+            timeoutSeconds: 10
+            failureThreshold: 6
+          volumeMounts:
+            - { name: cassandra-data, mountPath: /var/lib/cassandra }
+            - { name: topology, mountPath: /etc/cassandra-topology, readOnly: true }
+      volumes:
+        - name: topology
+          configMap:
+            name: cassandra-topology
+  volumeClaimTemplates:
+    - metadata:
+        name: cassandra-data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        storageClassName: managed-csi-premium
+        resources:
+          requests:
+            storage: 32Gi

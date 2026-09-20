@@ -1,0 +1,22 @@
+# Base comum aos DOIS datacenters. Tudo que difere entre dc1 e dc2 (nome do DC,
+# IPs dos internal LBs, zona de cada rack, auto_bootstrap) está nos overlays
+# dc1/ e dc2/ — a base é idêntica dos dois lados de propósito.
+#
+# Note que o ConfigMap `cassandra-topology` NÃO está aqui: ele é o mapa de
+# endereços, e é justamente o que muda por região. Cada overlay traz o seu.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - 00-namespace.yaml
+  - 10-service-headless.yaml
+  - 11-service-client.yaml
+  - 30-statefulset-rack1.yaml
+  - 31-statefulset-rack2.yaml
+  - 40-services-pod-lb.yaml
+  - 50-loadgen.yaml
+
+images:
+  - name: tp01-loadgen
+    newName: acrtp01niegmx.azurecr.io/tp01-loadgen
+    newTag: v1

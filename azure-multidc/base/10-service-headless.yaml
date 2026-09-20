@@ -1,0 +1,22 @@
+# Service HEADLESS — DNS estável DENTRO de um DC (um cluster k8s).
+# Não é usado para gossip entre DCs: para isso existe um internal LB por pod
+# (40-services-pod-lb.yaml), porque o IP do pod não é roteável fora do cluster.
+apiVersion: v1
+kind: Service
+metadata:
+  name: cassandra
+  namespace: sd
+  labels:
+    app: cassandra
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: true
+  selector:
+    app: cassandra
+  ports:
+    - name: intra-node
+      port: 7000
+    - name: jmx
+      port: 7199
+    - name: cql
+      port: 9042

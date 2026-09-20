@@ -1,0 +1,33 @@
+# ÚNICA instância do gerador de carga em todo o cluster multi-DC.
+#
+# O driver fala só com o DC local (DCAwareRoundRobin): as escritas confirmam em
+# dc1 sem esperar a outra região. A replicação para o dc2 acontece em segundo
+# plano — e é justamente por escrever de um lado só que dá para provar, lendo do
+# dc2, que os dados atravessaram.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: loadgen
+  namespace: sd
+spec:
+  replicas: 1
+  template:
+    spec:
+      # A aplicação vai para a ZONA 2, onde mora só o rack2 (1 nó). A zona 1
+      # concentra os 2 nós do rack1 e, como o NetworkTopologyStrategy distribui
+      # as réplicas em rodízio entre os racks, ela carrega 2 das 3 cópias de
+      # cada partição — é a zona mais ocupada. Deixar o gerador de carga longe
+      # dela evita disputa de CPU justamente onde o Cassandra mais trabalha.
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: topology.kubernetes.io/zone
+                    operator: In
+                    values: ["chilecentral-2"]
+      containers:
+        - name: loadgen
+          env:
+            - name: LOCAL_DC
+              value: "dc1"

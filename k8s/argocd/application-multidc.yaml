@@ -1,0 +1,110 @@
+# Applications do Argo CD para o cenário MULTI-DC.
+#
+# Modelo hub-and-spoke: UM Argo CD (instalado no cluster do dc1) governa os DOIS
+# clusters AKS. A diferença entre as duas Applications abaixo é só o
+# `destination.server`:
+#   - dc1 -> https://kubernetes.default.svc  (o próprio cluster onde o Argo roda)
+#   - dc2 -> a URL da API do outro AKS, registrada por
+#            scripts/argocd-register-cluster.sh
+#
+# ⚠️ TEMPLATE: os campos ${...} são preenchidos por scripts/argocd-app-multidc.sh
+#    (chamado por `make mdc-argo-apps`). Não aplique com kubectl direto.
+#
+# ⚠️ O overlay referenciado aqui precisa ter o nome REAL do seu ACR commitado —
+#    o Argo lê do Git e não passa pelo `sed` do Makefile. Rode `make set-acr
+#    ACR=<seu-acr>` e faça commit antes de registrar as Applications.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: tp01-cassandra-dc1
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: ${REPO_URL}
+    targetRevision: ${BRANCH}
+    path: ${APP_PATH_DC1}
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: sd
+  # Campos que o cluster injeta e que são IMUTÁVEIS no StatefulSet: sem ignorar,
+  # o Argo fica eternamente OutOfSync tentando removê-los.
+  ignoreDifferences:
+    - group: apps
+      kind: StatefulSet
+      name: cassandra-rack1
+      namespace: sd
+      jsonPointers:
+        - /spec/volumeClaimTemplates
+        - /spec/persistentVolumeClaimRetentionPolicy
+    - group: apps
+      kind: StatefulSet
+      name: cassandra-rack2
+      namespace: sd
+      jsonPointers:
+        - /spec/volumeClaimTemplates
+        - /spec/persistentVolumeClaimRetentionPolicy
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
+    retry:
+      limit: 5
+      backoff: { duration: 10s, factor: 2, maxDuration: 3m }
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: tp01-cassandra-dc2
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: ${REPO_URL}
+    targetRevision: ${BRANCH}
+    path: ${APP_PATH_DC2}
+  destination:
+    # Cluster remoto, registrado como Secret no namespace argocd.
+    server: ${DC2_SERVER}
+    namespace: sd
+  ignoreDifferences:
+    - group: apps
+      kind: StatefulSet
+      name: cassandra-rack1
+      namespace: sd
+      jsonPointers:
+        - /spec/volumeClaimTemplates
+        - /spec/persistentVolumeClaimRetentionPolicy
+    - group: apps
+      kind: StatefulSet
+      name: cassandra-rack2
+      namespace: sd
+      jsonPointers:
+        - /spec/volumeClaimTemplates
+        - /spec/persistentVolumeClaimRetentionPolicy
+    # O loadgen do dc2 fica com replicas: 0 no Git e só é ligado sob demanda,
+    # para a demo de queda de região (`make mdc-loadgen-dc2-on`). Sem ignorar
+    # /spec/replicas, o selfHeal o desligaria de volta poucos minutos depois.
+    - group: apps
+      kind: Deployment
+      name: loadgen
+      namespace: sd
+      jsonPointers:
+        - /spec/replicas
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
+    retry:
+      limit: 5
+      backoff: { duration: 10s, factor: 2, maxDuration: 3m }

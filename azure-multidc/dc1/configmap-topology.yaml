@@ -1,0 +1,20 @@
+# MAPA DE ENDEREÇOS do dc1 — o coração da configuração multi-região.
+#
+# seeds: 2 nós de contato por DC, os MESMOS 4 IPs nos dois lados. É assim que
+#   os dois clusters k8s descobrem que formam um único anel Cassandra.
+#   (Seed não é "mestre": serve só para o primeiro contato; depois é tudo gossip.)
+#
+# lb-ips: qual IP fixo de internal LB pertence a cada pod. O wrapper do
+#   container lê este arquivo e usa o valor como broadcast_address.
+#   Os IPs precisam existir na subnet snet-lb desta região (10.10.32.0/24).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cassandra-topology
+  namespace: sd
+data:
+  seeds: "10.10.32.10,10.10.32.11,10.20.32.10,10.20.32.11"
+  lb-ips: |
+    cassandra-rack1-0=10.10.32.10
+    cassandra-rack1-1=10.10.32.11
+    cassandra-rack2-0=10.10.32.12

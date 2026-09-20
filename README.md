@@ -99,7 +99,14 @@ Para ver **onde** uma chave é replicada (quais 3 nós):
 kubectl exec -n sd cassandra-0 -- nodetool getendpoints sd_demo eventos 1
 ```
 
-## Levando para a nuvem (AWS/GCP) — só portabilidade por enquanto
+## Multi-datacenter: 2 regiões da Azure, 2 racks, 6 nós
+
+Topologia distribuída de verdade — um anel Cassandra sobre **dois clusters AKS
+em regiões diferentes**, com rack mapeado para zona de disponibilidade e
+`RF = {dc1:3, dc2:3}`. Permite a demo de **perda de uma região inteira**.
+Guia: **[MULTIDC.md](MULTIDC.md)**. Atalho: `make mdc-bootstrap`.
+
+## Levando para outras nuvens (AWS/GCP) — só portabilidade por enquanto
 
 Os manifestos são k8s padrão. Para rodar num cluster gerenciado:
 
@@ -113,7 +120,8 @@ Os manifestos são k8s padrão. Para rodar num cluster gerenciado:
 ## Aplicação de carga + demo de tolerância a falhas
 
 A "aplicação" do TP é um **gerador de carga** (`app/loadgen.py`, Python +
-`cassandra-driver`) que dispara escritas/leituras contínuas em `LOCAL_QUORUM`
+`cassandra-driver`) que dispara `INSERT`/`SELECT`/`UPDATE`/`DELETE` contínuos
+(25% cada por padrão, ajustável em `OP_MIX`) em `LOCAL_QUORUM`
 contra o Service `cassandra-client:9042` e imprime um **placar ao vivo**. O log
 dela é o palco da demo: mostra throughput, latência (p50/p95/p99), nós vivos e
 detecta em tempo real um nó **caindo** (`HOST DOWN`) e **voltando** (`HOST ADD`).

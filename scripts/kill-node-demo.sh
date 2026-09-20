@@ -19,6 +19,10 @@
 # essas escritas/leituras em quórum FALHAM (isso é esperado e didático!).
 set -euo pipefail
 NS="${NS:-sd}"
+# CTX: contexto kubectl (usado no setup multi-DC para escolher a regiao).
+# Vazio = contexto atual, que e o comportamento de sempre no kind.
+CTX="${CTX:-}"
+kubectl() { command kubectl ${CTX:+--context "$CTX"} "$@"; }
 COUNT="${COUNT:-1}"
 MODE="${MODE:-abrupt}"
 POD="${POD:-}"

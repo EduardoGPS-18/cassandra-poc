@@ -1,0 +1,16 @@
+# Overlay do dc1 — aplicado no cluster AKS de brazilsouth.
+#
+# dc1 NASCE com o cluster: auto_bootstrap padrao (true).
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../base
+  - configmap-topology.yaml
+
+patches:
+  - path: patch-statefulset-rack1.yaml
+  - path: patch-statefulset-rack2.yaml
+  - path: patch-loadgen.yaml
+  # arquivo multi-documento: casa com os 3 Services pelo nome/kind
+  - path: patch-services-lb.yaml

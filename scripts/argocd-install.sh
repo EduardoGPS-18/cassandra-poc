@@ -1,7 +1,12 @@
 #!/usr/bin/env bash
-# Instala o Argo CD no cluster kind atual e espera ele ficar pronto.
+# Instala o Argo CD num cluster (kind ou AKS) e espera ele ficar pronto.
 # Idempotente: rodar de novo apenas reaplica/atualiza.
 set -euo pipefail
+
+# CTX: contexto kubectl alvo. Vazio = contexto atual (comportamento no kind).
+# No Azure aponte para o cluster AKS: CTX=aks-tp01 ou CTX=aks-tp01-dc1.
+CTX="${CTX:-}"
+kubectl() { command kubectl ${CTX:+--context "$CTX"} "$@"; }
 
 ARGO_NS="${ARGO_NS:-argocd}"
 # Versão do Argo CD. "stable" pega o último release estável; fixe uma tag

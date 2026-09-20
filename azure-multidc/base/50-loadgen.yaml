@@ -1,6 +1,7 @@
-# Gerador de carga (a "aplicação" do TP) — Deployment contínuo.
-# Roda para sempre disparando escritas/leituras em LOCAL_QUORUM; o log é o
-# palco da demo de tolerância a falhas. Acompanhe com:  make app-logs
+# Um gerador de carga POR DC. Cada um escreve no seu próprio DC com
+# LOCAL_QUORUM — ou seja, a escrita confirma com 2 das 3 réplicas locais e NÃO
+# espera a travessia Brasil<->EUA. A replicação para o outro DC acontece em
+# background; é isso que torna multi-DC viável com ~120ms entre as regiões.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -9,7 +10,7 @@ metadata:
   labels:
     app: loadgen
 spec:
-  replicas: 1                     # suba para 2-3 se quiser mais carga concorrente
+  replicas: 1
   selector:
     matchLabels:
       app: loadgen
@@ -18,23 +19,25 @@ spec:
       labels:
         app: loadgen
     spec:
-      # Tempo para o SIGTERM imprimir o RESUMO FINAL antes de morrer.
       terminationGracePeriodSeconds: 15
       containers:
         - name: loadgen
-          image: tp01-loadgen:latest
-          imagePullPolicy: IfNotPresent   # usa a imagem carregada via `kind load`
+          image: tp01-loadgen
+          imagePullPolicy: Always
           env:
             - name: CONTACT_POINTS
               value: "cassandra-client.sd.svc.cluster.local"
             - name: KEYSPACE
               value: "sd_demo"
-            - name: LOCAL_DC
-              value: "dc1"
+            # LOCAL_DC é injetado pelo overlay: é o que faz o driver falar só
+            # com o DC local (TokenAware + DCAwareRoundRobin).
             - name: CONSISTENCY
-              value: "LOCAL_QUORUM"   # 2 de 3 réplicas => tolera 1 nó fora
+              value: "LOCAL_QUORUM"
+            # 4, nao 32: as VMs sao burstable e martelar o Cassandra esgotaria
+            # o credito de CPU no meio da demo. Tambem reduz o trafego replicado
+            # entre as regioes, que e o item mais caro da conta.
             - name: CONCURRENCY
-              value: "32"
+              value: "4"
             # Mix das 4 operacoes, pesos normalizados. 25% cada.
             # UPDATE/DELETE precisam de linhas existentes: o loadgen mantem um
             # pool das PKs recem-inseridas para servirem de alvo.
@@ -44,14 +47,8 @@ spec:
               value: "64"
             - name: REPORT_INTERVAL
               value: "2.0"
-            # Emite amostras cruas de latência (linhas "#LAT ...") para o
-            # run-test.sh calcular percentis corretos (sem média de percentis).
             - name: EMIT_LAT_SAMPLES
               value: "1"
           resources:
-            requests:
-              cpu: "100m"
-              memory: "128Mi"
-            limits:
-              cpu: "500m"
-              memory: "256Mi"
+            requests: { cpu: "250m", memory: "256Mi" }
+            limits: { cpu: "1", memory: "512Mi" }
