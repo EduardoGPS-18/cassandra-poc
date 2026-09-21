@@ -48,6 +48,7 @@ BUCKETS          = int(_env("BUCKETS", "64"))             # nº de partições
 KEY_POOL_SIZE    = int(_env("KEY_POOL_SIZE", "5000"))
 PAYLOAD_BYTES    = int(_env("PAYLOAD_BYTES", "200"))
 REPORT_INTERVAL  = float(_env("REPORT_INTERVAL", "2.0"))  # segundos entre placares
+SAMPLE_INTERVAL  = float(_env("SAMPLE_INTERVAL", "0.2"))  # amostragem do anel
 REQUEST_TIMEOUT  = float(_env("REQUEST_TIMEOUT", "5.0"))
 DURATION_SECONDS = int(_env("DURATION_SECONDS", "0"))      # 0 = roda para sempre
 # Emite, a cada janela, uma linha "#LAT <ms> <ms> ..." com as amostras CRUAS de
@@ -207,12 +208,73 @@ def _pct(sorted_list, p):
     i = min(len(sorted_list) - 1, int(round((p / 100.0) * (len(sorted_list) - 1))))
     return sorted_list[i]
 
+# --------------------------- Amostrador do anel ----------------------------- #
+class RingSampler:
+    """Lê a visão do DRIVER sobre o anel local a cada SAMPLE_INTERVAL.
+
+    Resolve dois problemas do contador ingênuo:
+
+    1) JANELA CEGA. O placar sai a cada REPORT_INTERVAL (2s). Uma queda de nó
+       dura poucos segundos e, lida por amostra instantânea, some entre dois
+       placares. Aqui guardamos o MÍNIMO observado na janela.
+
+    2) DENOMINADOR QUE ENCOLHE JUNTO. Quando o pod renasce com outro IP, o
+       driver não marca o host como down — ele REMOVE o antigo e ADICIONA um
+       novo (o broadcast_rpc_address é o IP do pod, que mudou). Se o
+       denominador fosse o total instantâneo, ele cairia junto com o numerador
+       e a conta viraria "2/2", escondendo exatamente a falha que queremos ver.
+       Por isso o denominador é uma MARCA D'ÁGUA: o maior número de nós locais
+       já observado. Aí a remoção aparece como "2/3".
+    """
+    def __init__(self, cluster, local_dc):
+        self.cluster = cluster
+        self.local_dc = local_dc
+        self.lock = threading.Lock()
+        self.esperado = 0      # marca d'água do nº de nós locais
+        self.atual = 0
+        self.minimo = None     # mínimo desde o último placar
+
+    def _ler(self):
+        hosts = self.cluster.metadata.all_hosts()
+        locais = [h for h in hosts if h.datacenter == self.local_dc] or hosts
+        return sum(1 for h in locais if h.is_up), len(locais)
+
+    def amostra(self):
+        vivos, total = self._ler()
+        with self.lock:
+            self.esperado = max(self.esperado, total, vivos)
+            self.atual = vivos
+            self.minimo = vivos if self.minimo is None else min(self.minimo, vivos)
+
+    def snapshot_and_reset(self):
+        with self.lock:
+            mini = self.atual if self.minimo is None else self.minimo
+            self.minimo = None
+            return self.atual, mini, max(self.esperado, 1)
+
+    def instantaneo(self):
+        with self.lock:
+            return self.atual, max(self.esperado, 1)
+
+    def run(self):
+        while RUNNING.is_set():
+            try:
+                self.amostra()
+            except Exception:
+                pass          # metadata em transição: a próxima amostra pega
+            time.sleep(SAMPLE_INTERVAL)
+
+SAMPLER = None   # preenchido no main, depois da conexão
+
 # ------------------- Listener de subida/queda de nós ------------------------ #
 # É este listener que faz a demo de falha "aparecer" no log no instante certo.
 class RingWatcher:
     def __init__(self, cluster): self.cluster = cluster
     def _live(self):
-        """Vivos / total NO DC LOCAL — ver a nota no reporter sobre o DC remoto."""
+        """Vivos / esperado no DC LOCAL — ver RingSampler para o porquê."""
+        if SAMPLER is not None:
+            SAMPLER.amostra()          # lê agora, o evento acabou de acontecer
+            return SAMPLER.instantaneo()
         hosts = self.cluster.metadata.all_hosts()
         locais = [h for h in hosts if h.datacenter == LOCAL_DC] or hosts
         return sum(1 for h in locais if h.is_up), len(locais)
@@ -223,9 +285,13 @@ class RingWatcher:
         up, total = self._live()
         log(f">>> HOST DOWN {host.address}   (nós vivos em {LOCAL_DC}: {up}/{total})  <== FALHA DETECTADA")
     def on_add(self, host):
-        log(f">>> HOST ADD  {host.address}")
+        up, total = self._live()
+        log(f">>> HOST ADD  {host.address}   (nós vivos em {LOCAL_DC}: {up}/{total})")
     def on_remove(self, host):
-        log(f">>> HOST REMOVE {host.address}")
+        # É ESTE que aparece quando o pod renasce com outro IP: para o driver o
+        # host não "caiu", ele deixou de existir. Por isso a contagem importa aqui.
+        up, total = self._live()
+        log(f">>> HOST REMOVE {host.address}   (nós vivos em {LOCAL_DC}: {up}/{total})")
 
 # ------------------------------ Conexão ------------------------------------- #
 def connect_with_retry():
@@ -364,16 +430,14 @@ def run_reporter(cluster):
         time.sleep(REPORT_INTERVAL)
         ok, err, kinds, lats, ok_t, err_t, ok_ops, err_ops = STATS.snapshot_and_reset()
         rps = (ok + err) / REPORT_INTERVAL
-        # Contagem POR DATACENTER, e não sobre todos os hosts conhecidos.
-        #
-        # Motivo: DCAwareRoundRobinPolicy não abre conexão com o DC remoto, então
-        # os nós de lá nunca têm is_up confirmado (ficam em None). Contar todos
-        # daria um "3/6" permanente — que parece meio cluster fora do ar quando
-        # na verdade é "3 locais vivos, 3 remotos que o driver não observa".
-        hosts = cluster.metadata.all_hosts()
-        locais = [h for h in hosts if h.datacenter == LOCAL_DC]
-        live = sum(1 for h in locais if h.is_up)
-        total_local = len(locais) or len(hosts)
+        # Contagem vinda do amostrador (ver RingSampler): só o DC local, com
+        # denominador em marca d'água e o mínimo observado na janela.
+        live, minimo, esperado = SAMPLER.snapshot_and_reset()
+        vivos_txt = f"{live}/{esperado} ({LOCAL_DC})"
+        if minimo < live:
+            # Houve uma queda ENTRE dois placares. Sem isto ela passaria batida:
+            # é uma falha de segundos vista por uma amostra a cada 2s.
+            vivos_txt = f"{live}/{esperado} mín={minimo} ({LOCAL_DC})  <== OSCILOU"
         elapsed = int(time.perf_counter() - t_start)
         errtxt = ""
         if kinds:
@@ -390,7 +454,7 @@ def run_reporter(cluster):
         log(f"[t+{elapsed:>4}s] janela: ok={ok:<5} err={err:<3} | {rps:6.0f} op/s | "
             f"lat ms p50={_pct(lats,50):5.1f} p95={_pct(lats,95):5.1f} p99={_pct(lats,99):6.1f} | "
             f"mix {mixtxt} | pool={len(KEYS)} | "
-            f"nós_vivos={live}/{total_local} ({LOCAL_DC}) | TOTAL ok={ok_t} err={err_t}{errtxt}")
+            f"nós_vivos={vivos_txt} | TOTAL ok={ok_t} err={err_t}{errtxt}")
         # Amostras cruas da janela para agregação correta a jusante (ver EMIT_LAT_SAMPLES).
         # Impressas sem timestamp para começarem em '#LAT' (filtrável por ^#LAT).
         if EMIT_LAT_SAMPLES and lats:
@@ -407,7 +471,16 @@ def main():
     log(f"loadgen iniciando: CL={CONSISTENCY_NAME} concurrency={CONCURRENCY} "
         f"buckets={BUCKETS} duration={DURATION_SECONDS or '∞'}s")
     log(f"mix de operações: {MIX_TXT}  (pool de chaves p/ UPDATE/DELETE: {KEY_POOL_SIZE})")
+    log(f"amostragem do anel a cada {SAMPLE_INTERVAL}s — o placar reporta o mínimo da janela")
     cluster, session = connect_with_retry()
+
+    # O amostrador precisa existir ANTES do listener: o RingWatcher consulta ele
+    # para imprimir a contagem junto dos eventos HOST UP/DOWN/ADD/REMOVE.
+    global SAMPLER
+    SAMPLER = RingSampler(cluster, LOCAL_DC)
+    SAMPLER.amostra()                      # primeira leitura fixa a marca d'água
+    threading.Thread(target=SAMPLER.run, daemon=True).start()
+
     cluster.register_listener(RingWatcher(cluster))
     ensure_schema(session)
 
