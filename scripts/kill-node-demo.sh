@@ -7,6 +7,7 @@
 #   MODE=abrupt crash sem drain (--force --grace-period=0) (default)  <- enunciado
 #   MODE=graceful  remoção normal (dispara preStop: nodetool drain)
 #   POD=<nome>  derruba um pod ESPECÍFICO (ignora COUNT)
+#   HOLD=<seg>  mantem o no fora do ar por N segundos antes de deixar voltar
 #
 # Exemplos:
 #   scripts/kill-node-demo.sh                 # 1 pod aleatório, abrupto
@@ -25,6 +26,12 @@ CTX="${CTX:-}"
 kubectl() { command kubectl ${CTX:+--context "$CTX"} "$@"; }
 COUNT="${COUNT:-1}"
 MODE="${MODE:-abrupt}"
+# HOLD=<segundos>: mantem o(s) no(s) FORA do ar por esse tempo.
+# O StatefulSet recria o pod imediatamente — nao ha como pedir a ele que espere.
+# Entao seguramos apagando de novo, em laco, ate o tempo acabar. E feio, mas e
+# honesto: simula um no que demora a voltar, sem mexer em manifesto (o que faria
+# o Argo CD brigar com a demo via selfHeal).
+HOLD="${HOLD:-0}"
 POD="${POD:-}"
 
 # Escolhe QUALQUER nó vivo para rodar nodetool (o cassandra-0 pode ter sido morto).
@@ -68,10 +75,32 @@ for p in $TARGETS; do
 done
 wait
 
-echo
-echo ">>> ~8s após a falha (pode aparecer nó(s) DN = Down, ou já em recriação):"
-sleep 8
-ring
+if [ "$HOLD" -gt 0 ]; then
+  echo
+  echo ">>> Segurando fora do ar por ${HOLD}s (apagando o pod sempre que o StatefulSet o recria)"
+  FIM=$(( $(date +%s) + HOLD ))
+  META=$(( $(date +%s) + 10 ))
+  while [ "$(date +%s)" -lt "$FIM" ]; do
+    for p in $TARGETS; do
+      kubectl delete pod -n "$NS" "$p" --grace-period=0 --force >/dev/null 2>&1 || true
+    done
+    if [ "$(date +%s)" -ge "$META" ]; then
+      echo "    faltam $(( FIM - $(date +%s) ))s — anel agora:"
+      ring
+      META=$(( $(date +%s) + 15 ))
+    fi
+    sleep 2
+  done
+  echo ">>> Liberado. O StatefulSet vai recriar o pod agora."
+  echo
+  echo ">>> Anel logo apos liberar:"
+  ring
+else
+  echo
+  echo ">>> ~8s após a falha (pode aparecer nó(s) DN = Down, ou já em recriação):"
+  sleep 8
+  ring
+fi
 echo
 echo ">>> Acompanhe a app: com COUNT=1 os erros ficam ~0 (RF=3 tolera 1 fora)."
 echo "    Com COUNT>=2, alguma partição pode perder quórum -> alguns erros (esperado)."

@@ -12,10 +12,12 @@ SHELL := /bin/bash
         argo-install argo-app argo-ui argo-password argo-sync argo-down \
         mdc-providers mdc-rg mdc-acr mdc-net mdc-clusters mdc-image mdc-render-dc1 mdc-render-dc2 mdc-deploy-dc1 \
         mdc-deploy-dc2 mdc-keyspace mdc-join mdc-status mdc-logs-dc1 mdc-logs-dc2 mdc-kill-dc1 \
-        mdc-kill-dc2 mdc-loadgen-dc2-on mdc-loadgen-dc2-off mdc-bootstrap mdc-down \
+        mdc-kill-dc2 mdc-loadgen-dc2-on mdc-loadgen-dc2-off mdc-stop mdc-start \
+        mdc-power mdc-fix-commitlog mdc-bootstrap mdc-down \
         az-login set-acr \
         mdc-argo-install mdc-argo-register-dc2 mdc-argo-apps mdc-argo-bootstrap mdc-argo-ui \
-        mdc-argo-password mdc-argo-status mdc-argo-sync mdc-argo-down
+        mdc-argo-password mdc-argo-status mdc-argo-sync mdc-argo-down \
+        mdc-argo-expose mdc-argo-unexpose
 
 help: ## Mostra esta ajuda
 	@grep -E '^[a-zA-Z0-9_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
@@ -52,7 +54,7 @@ pf: ## Port-forward do CQL (9042) para localhost (para a app local depois)
 	kubectl -n $(NS) port-forward svc/cassandra-client 9042:9042
 
 kill-demo: ## Derruba nó(s): make kill-demo N=2 MODE=abrupt (ou MODE=graceful)
-	@COUNT=$(or $(N),1) MODE=$(or $(MODE),abrupt) bash scripts/kill-node-demo.sh
+	@COUNT=$(or $(N),1) MODE=$(or $(MODE),abrupt) HOLD=$(or $(HOLD),0) bash scripts/kill-node-demo.sh
 
 test: ## Teste automatizado de falha: make test N=2 MODE=abrupt WINDOW=30
 	@N=$(or $(N),1) MODE=$(or $(MODE),abrupt) WINDOW=$(or $(WINDOW),30) bash scripts/run-test.sh
@@ -232,13 +234,32 @@ mdc-loadgen-dc2-on: ## [multi-DC] Liga o gerador de carga do dc2 (demo de queda 
 mdc-loadgen-dc2-off: ## [multi-DC] Desliga o gerador de carga do dc2
 	kubectl --context $(MDC_CTX2) -n $(NS) scale deploy/loadgen --replicas=0
 
-mdc-kill-dc1: ## [multi-DC] Derruba no(s) do dc1: make mdc-kill-dc1 N=1 MODE=abrupt
-	@CTX=$(MDC_CTX1) COUNT=$(or $(N),1) MODE=$(or $(MODE),abrupt) bash scripts/kill-node-demo.sh
+mdc-kill-dc1: ## [multi-DC] Derruba no(s) do dc1: make mdc-kill-dc1 N=1 [HOLD=30] [MODE=abrupt]
+	@CTX=$(MDC_CTX1) COUNT=$(or $(N),1) MODE=$(or $(MODE),abrupt) HOLD=$(or $(HOLD),0) bash scripts/kill-node-demo.sh
 
 mdc-kill-dc2: ## [multi-DC] Derruba no(s) do dc2
-	@CTX=$(MDC_CTX2) COUNT=$(or $(N),1) MODE=$(or $(MODE),abrupt) bash scripts/kill-node-demo.sh
+	@CTX=$(MDC_CTX2) COUNT=$(or $(N),1) MODE=$(or $(MODE),abrupt) HOLD=$(or $(HOLD),0) bash scripts/kill-node-demo.sh
 
 mdc-bootstrap: mdc-providers mdc-rg mdc-acr mdc-net mdc-clusters mdc-image mdc-deploy-dc1 mdc-keyspace mdc-deploy-dc2 mdc-join mdc-status ## [multi-DC] Tudo de ponta a ponta
+
+mdc-fix-commitlog: ## [multi-DC] Recupera no em CrashLoop por commit log corrompido: make mdc-fix-commitlog CTX=<ctx> POD=<pod>
+	@CTX="$(CTX)" POD="$(POD)" NS=$(NS) bash scripts/multidc-fix-commitlog.sh
+
+mdc-stop: ## [multi-DC] Desliga as VMs dos 2 clusters (para de pagar computacao, nao apaga nada)
+	@RG1=$(MDC_RG1) AKS1=$(MDC_AKS1) RG2=$(MDC_RG2) AKS2=$(MDC_AKS2) \
+	  CTX1=$(MDC_CTX1) CTX2=$(MDC_CTX2) NS=$(NS) bash scripts/azure-multidc-power.sh stop
+
+mdc-start: ## [multi-DC] Religa os 2 clusters e espera o anel voltar (~20 min)
+	@RG1=$(MDC_RG1) AKS1=$(MDC_AKS1) RG2=$(MDC_RG2) AKS2=$(MDC_AKS2) \
+	  CTX1=$(MDC_CTX1) CTX2=$(MDC_CTX2) NS=$(NS) bash scripts/azure-multidc-power.sh start
+
+mdc-power: ## [multi-DC] Mostra se os clusters estao Running ou Stopped
+	@for p in "$(MDC_RG1) $(MDC_AKS1)" "$(MDC_RG2) $(MDC_AKS2)"; do \
+	  set -- $$p; \
+	  printf "  %-16s power=%-9s provisioning=%s\n" "$$2" \
+	    "$$(az aks show -g $$1 -n $$2 --query powerState.code -o tsv)" \
+	    "$$(az aks show -g $$1 -n $$2 --query provisioningState -o tsv)"; \
+	done
 
 mdc-down: ## [multi-DC] APAGA os 2 resource groups (clusters, ACR, discos, LBs, VNets)
 	az group delete -n $(MDC_RG1) --yes --no-wait
@@ -262,6 +283,15 @@ mdc-argo-apps: ## [multi-DC] Registra as 2 Applications: make mdc-argo-apps REPO
 	  BRANCH="$(or $(BRANCH),main)" bash scripts/argocd-app-multidc.sh
 
 mdc-argo-bootstrap: mdc-argo-install mdc-argo-register-dc2 mdc-argo-apps ## [multi-DC] GitOps de ponta a ponta
+
+MDC_ARGO_DNS ?= argocd-tp01-$(shell whoami | tr -cd '[:alnum:]' | tr 'A-Z' 'a-z')
+
+mdc-argo-expose: ## [multi-DC] Publica a UI do Argo num dominio da Azure (default: so o seu IP)
+	@CTX=$(MDC_CTX1) DNS_LABEL=$(MDC_ARGO_DNS) SOURCE_CIDR="$(SOURCE_CIDR)" \
+	  bash scripts/argocd-expose.sh
+
+mdc-argo-unexpose: ## [multi-DC] Remove a exposicao publica da UI do Argo
+	kubectl --context $(MDC_CTX1) -n argocd delete svc argocd-server-public --ignore-not-found
 
 mdc-argo-ui: ## [multi-DC] Port-forward da UI do Argo CD (hub no dc1)
 	@echo "UI: https://localhost:8080  (admin / make mdc-argo-password)"
