@@ -13,11 +13,15 @@ spec:
   replicas: 0
   template:
     spec:
-      # A aplicação vai para a ZONA 2, onde mora só o rack2 (1 nó). A zona 1
-      # concentra os 2 nós do rack1 e, como o NetworkTopologyStrategy distribui
-      # as réplicas em rodízio entre os racks, ela carrega 2 das 3 cópias de
-      # cada partição — é a zona mais ocupada. Deixar o gerador de carga longe
-      # dela evita disputa de CPU justamente onde o Cassandra mais trabalha.
+      # A aplicação vai para a ZONA 3, onde mora só o rack2 (1 nó). No dc2 as
+      # zonas disponíveis são 2 e 3 (a 1 é barrada para esta subscription), e é
+      # a zona 2 que concentra os 2 nós do rack1. Como o NetworkTopologyStrategy
+      # distribui as réplicas em rodízio entre os racks, a zona 2 carrega 2 das
+      # 3 cópias de cada partição — é a mais ocupada. Deixar o gerador de carga
+      # fora dela evita disputa de CPU onde o Cassandra mais trabalha.
+      #
+      # Atenção ao trocar de região: o número da zona muda junto. No dc1 o
+      # equivalente é chilecentral-2, porque lá as zonas são 1 e 2.
       affinity:
         nodeAffinity:
           requiredDuringSchedulingIgnoredDuringExecution:
@@ -25,7 +29,7 @@ spec:
               - matchExpressions:
                   - key: topology.kubernetes.io/zone
                     operator: In
-                    values: ["mexicocentral-2"]
+                    values: ["mexicocentral-3"]
       containers:
         - name: loadgen
           env:

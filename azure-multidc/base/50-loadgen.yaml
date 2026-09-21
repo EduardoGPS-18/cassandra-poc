@@ -11,6 +11,18 @@ metadata:
     app: loadgen
 spec:
   replicas: 1
+  # Recreate em vez de RollingUpdate: mata o pod velho ANTES de criar o novo.
+  #
+  # O rolling update padrão quer os dois de pé ao mesmo tempo (maxSurge=1,
+  # maxUnavailable=0). Como o nodeAffinity prende esta aplicação a uma zona que
+  # tem UM nó só — e esse nó já hospeda um Cassandra —, não há CPU para dois
+  # loadgens simultâneos: o pod novo fica Pending com "Insufficient cpu" e o
+  # rollout trava para sempre.
+  #
+  # Gerador de carga não precisa de rollout sem downtime: alguns segundos sem
+  # carga entre uma versão e outra não custam nada.
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app: loadgen

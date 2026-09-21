@@ -212,14 +212,16 @@ def _pct(sorted_list, p):
 class RingWatcher:
     def __init__(self, cluster): self.cluster = cluster
     def _live(self):
+        """Vivos / total NO DC LOCAL — ver a nota no reporter sobre o DC remoto."""
         hosts = self.cluster.metadata.all_hosts()
-        return sum(1 for h in hosts if h.is_up), len(hosts)
+        locais = [h for h in hosts if h.datacenter == LOCAL_DC] or hosts
+        return sum(1 for h in locais if h.is_up), len(locais)
     def on_up(self, host):
         up, total = self._live()
-        log(f">>> HOST UP   {host.address}   (nós vivos: {up}/{total})")
+        log(f">>> HOST UP   {host.address}   (nós vivos em {LOCAL_DC}: {up}/{total})")
     def on_down(self, host):
         up, total = self._live()
-        log(f">>> HOST DOWN {host.address}   (nós vivos: {up}/{total})  <== FALHA DETECTADA")
+        log(f">>> HOST DOWN {host.address}   (nós vivos em {LOCAL_DC}: {up}/{total})  <== FALHA DETECTADA")
     def on_add(self, host):
         log(f">>> HOST ADD  {host.address}")
     def on_remove(self, host):
@@ -362,8 +364,16 @@ def run_reporter(cluster):
         time.sleep(REPORT_INTERVAL)
         ok, err, kinds, lats, ok_t, err_t, ok_ops, err_ops = STATS.snapshot_and_reset()
         rps = (ok + err) / REPORT_INTERVAL
+        # Contagem POR DATACENTER, e não sobre todos os hosts conhecidos.
+        #
+        # Motivo: DCAwareRoundRobinPolicy não abre conexão com o DC remoto, então
+        # os nós de lá nunca têm is_up confirmado (ficam em None). Contar todos
+        # daria um "3/6" permanente — que parece meio cluster fora do ar quando
+        # na verdade é "3 locais vivos, 3 remotos que o driver não observa".
         hosts = cluster.metadata.all_hosts()
-        live = sum(1 for h in hosts if h.is_up)
+        locais = [h for h in hosts if h.datacenter == LOCAL_DC]
+        live = sum(1 for h in locais if h.is_up)
+        total_local = len(locais) or len(hosts)
         elapsed = int(time.perf_counter() - t_start)
         errtxt = ""
         if kinds:
@@ -380,7 +390,7 @@ def run_reporter(cluster):
         log(f"[t+{elapsed:>4}s] janela: ok={ok:<5} err={err:<3} | {rps:6.0f} op/s | "
             f"lat ms p50={_pct(lats,50):5.1f} p95={_pct(lats,95):5.1f} p99={_pct(lats,99):6.1f} | "
             f"mix {mixtxt} | pool={len(KEYS)} | "
-            f"nós_vivos={live}/{len(hosts)} | TOTAL ok={ok_t} err={err_t}{errtxt}")
+            f"nós_vivos={live}/{total_local} ({LOCAL_DC}) | TOTAL ok={ok_t} err={err_t}{errtxt}")
         # Amostras cruas da janela para agregação correta a jusante (ver EMIT_LAT_SAMPLES).
         # Impressas sem timestamp para começarem em '#LAT' (filtrável por ^#LAT).
         if EMIT_LAT_SAMPLES and lats:
