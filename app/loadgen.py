@@ -235,9 +235,24 @@ class RingSampler:
         self.minimo = None     # mínimo desde o último placar
 
     def _ler(self):
+        """Conta NÓS, não endereços.
+
+        Quando um pod renasce com outro IP, o driver chega a manter na metadata
+        o endereço antigo E o novo ao mesmo tempo — mesmo nó, duas entradas. Se
+        contássemos endereços, o total subiria para 4 num cluster de 3 e a marca
+        d'água travaria nesse valor errado.
+
+        O `host_id` é a identidade real do nó no anel: ele não muda quando o pod
+        é recriado, porque vem dos dados no disco. Agrupando por ele, o fantasma
+        some. Um nó conta como vivo se QUALQUER um dos seus endereços está up.
+        """
         hosts = self.cluster.metadata.all_hosts()
         locais = [h for h in hosts if h.datacenter == self.local_dc] or hosts
-        return sum(1 for h in locais if h.is_up), len(locais)
+        por_no = {}
+        for h in locais:
+            chave = getattr(h, "host_id", None) or h.address
+            por_no[chave] = por_no.get(chave, False) or bool(h.is_up)
+        return sum(1 for vivo in por_no.values() if vivo), len(por_no)
 
     def amostra(self):
         vivos, total = self._ler()
